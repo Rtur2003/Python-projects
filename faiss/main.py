@@ -1,66 +1,140 @@
+from pathlib import Path
+from typing import Iterable, List, Sequence
+
 from prompt_toolkit import prompt
 from prompt_toolkit.completion import Completer, Completion
-from sentence_transformers import SentenceTransformer
-import numpy as np
-
-def load_stopwords(file_path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        stopwords = [line.strip() for line in f if line.strip()]
-    return stopwords
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.neighbors import NearestNeighbors
 
 
-turkce_kelimeler = [
-    "mekan", "mekanik", "mektep", "emek", "çekmek", "kitap",
-    "kalem", "kalın", "araba", "armut", "asker", "aslan",
-    "bilgi", "bilim", "biber", "bilgisayar", "makine", "yazılım", "donanım",
-    "koşmak", "gitmek", "gelmek", "görmek", "konuşmak", "yemek", "içmek",
-    "güzel", "hızlı", "büyük", "küçük", "soğuk", "sıcak", "uzun", "kısa",
-    "mutlu", "üzgün", "zor", "kolay"
+BASE_KEYWORDS = [
+    "mekan",
+    "mekanik",
+    "mektep",
+    "emek",
+    "çiçek",
+    "kitap",
+    "kalem",
+    "kalın",
+    "araba",
+    "armut",
+    "asker",
+    "aslan",
+    "bilgi",
+    "bilim",
+    "biber",
+    "bilgisayar",
+    "makine",
+    "yazılım",
+    "donanım",
+    "koşmak",
+    "gitmek",
+    "gelmek",
+    "görmek",
+    "konuşmak",
+    "yemek",
+    "içmek",
+    "güzel",
+    "hızlı",
+    "büyük",
+    "küçük",
+    "soğuk",
+    "sıcak",
+    "uzun",
+    "kısa",
+    "mutlu",
+    "üzgün",
+    "zor",
+    "kolay",
 ]
 
-stopwords_from_file = load_stopwords("data/stopwords_tr.txt")  
+DEFAULT_STOPWORDS = {
+    "ve",
+    "ile",
+    "bu",
+    "şu",
+    "o",
+    "mi",
+    "mu",
+    "mı",
+    "mu",
+    "bir",
+    "hep",
+    "çok",
+    "bile",
+}
 
-all_keywords = list(set(turkce_kelimeler + stopwords_from_file))
+STOPWORDS_PATH = Path(__file__).parent / "data" / "stopwords_tr.txt"
 
 
-model = SentenceTransformer("dbmdz/bert-base-turkish-cased")
-turkce_stopwords = set(stopwords_from_file)
-embeddings = model.encode(all_keywords).astype('float32')
+def load_stopwords(file_path: Path) -> List[str]:
+    if file_path.is_file():
+        return [
+            line.strip()
+            for line in file_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+    # Fallback stopwords keep the CLI usable when the file is missing; adjust only with dataset awareness. @Rtur2003
+    return sorted(DEFAULT_STOPWORDS)
 
-class FaissAutocomplete(Completer):
-    def __init__(self, keywords, stopwords, model):
-        self.keywords = keywords
-        self.stopwords = stopwords
-        self.model = model
+
+class KeywordIndex:
+    def __init__(self, keywords: Sequence[str], stopwords: Iterable[str]):
+        normalized = [kw.strip() for kw in keywords if kw and kw.strip()]
+        if not normalized:
+            raise ValueError("Keyword list is empty.")
+        self.keywords = sorted(set(normalized))
+        self.stopwords = {s.lower() for s in stopwords}
+        self.vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4))
+        self.embeddings = self.vectorizer.fit_transform(self.keywords)
+        self.neighbors = NearestNeighbors(metric="cosine")
+        self.neighbors.fit(self.embeddings)
+
+    def search(self, text: str, limit: int = 5) -> List[str]:
+        query = text.strip()
+        if len(query) < 2:
+            return []
+
+        query_vec = self.vectorizer.transform([query])
+        requested = min(max(limit, 1) * 2, len(self.keywords))
+        distances, indices = self.neighbors.kneighbors(query_vec, n_neighbors=requested)
+
+        suggestions: List[str] = []
+        for idx in indices[0]:
+            candidate = self.keywords[idx]
+            if candidate.lower() in self.stopwords:
+                continue
+            suggestions.append(candidate)
+            if len(suggestions) >= limit:
+                break
+        return suggestions
+
+
+class FaissCompleter(Completer):
+    def __init__(self, index: KeywordIndex, limit: int = 5):
+        self.index = index
+        self.limit = limit
 
     def get_completions(self, document, complete_event):
-        text = document.text.strip()
-        if not text or len(text) < 2:
-            return
+        query = document.text
+        for suggestion in self.index.search(query, limit=self.limit):
+            yield Completion(suggestion, start_position=-len(query))
 
-        candidates = [w for w in self.keywords if w.startswith(text)]
-        if not candidates:
-            return
 
-        embeddings_candidates = self.model.encode(candidates).astype('float32')
-        vector = self.model.encode([text]).astype('float32')
+def run_cli() -> None:
+    stopwords = load_stopwords(STOPWORDS_PATH)
+    index = KeywordIndex(BASE_KEYWORDS, stopwords)
+    completer = FaissCompleter(index)
 
-        dists = np.linalg.norm(embeddings_candidates - vector, axis=1)
-        nearest_indices = np.argsort(dists)[:5]
-
-        for idx in nearest_indices:
-            suggestion = candidates[idx]
-            if suggestion in self.stopwords:
-                continue
-            yield Completion(suggestion, start_position=-len(text))
-
-faiss_completer = FaissAutocomplete(all_keywords, turkce_stopwords, model)
-
-while True:
-    try:
-        user_input = prompt("Kelime girin (çıkmak için q): ", completer=faiss_completer)
-        if user_input.lower() == "q":
+    while True:
+        try:
+            user_input = prompt("Kelime girin (çıkmak için q): ", completer=completer)
+            if user_input.strip().lower() == "q":
+                break
+            print(f"Seçilen: {user_input}")
+        except KeyboardInterrupt:
             break
-        print("Seçilen:", user_input)
-    except KeyboardInterrupt:
-        break
+
+
+if __name__ == "__main__":
+    run_cli()
