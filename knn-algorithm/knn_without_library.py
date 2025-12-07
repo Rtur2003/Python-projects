@@ -1,137 +1,88 @@
+from typing import Iterable, List, Sequence, Tuple
+
 import pandas as pd
 
-def knn_algorithm(feature_cols, label_col, data, prediction, k):
-    """
-    Kütüphane kullanmadan KNN algoritması ile tahmin yapar.
-    :param feature_cols:
-    :param label_col: 
-    :param data: 
-    :param prediction:
-    :param k: 
-    :return:
-    """
-    try:
-        distances = calculate_euclid_distance(
-            feature_cols, data, prediction
-        )
-        result_weighted, result_base, distances_k = find_category(
-            distances, k, data, label_col
-        )
-        return result_weighted, result_base,distances_k
 
-    except Exception as e:
-        print(e)
+def validate_k(k: int, dataset_size: int) -> None:
+    if k <= 0:
+        raise ValueError("k must be greater than 0.")
+    if k > dataset_size:
+        raise ValueError("k cannot be larger than the dataset size.")
 
 
-def calculate_euclid_distance(feature_cols, data, prediction):
-    """
-    Tüm verilerle verilen giriş arasındaki Öklid mesafesini hesaplar.
-    :param feature_cols:
-    :param data:
-    :param prediction:
-    :return: 
-    """
-    try:
-    
-        distances = []
-
-        for i in range(len(data)):
-            distance = 0
-            for row, col in enumerate(feature_cols):
-                distance += (prediction[row] - data[col][i]) ** 2
-
-            distance **= 0.5
-
-            distances.append((i,distance))
-
-        return distances
-
-    except Exception as e:
-        print(e)
+def calculate_euclid_distance(feature_cols: Sequence[str], data: pd.DataFrame, prediction: Sequence[float]) -> List[Tuple[int, float]]:
+    distances = []
+    for idx, row in data.iterrows():
+        diff = [(prediction[i] - row[col]) ** 2 for i, col in enumerate(feature_cols)]
+        distance = sum(diff) ** 0.5
+        distances.append((idx, float(distance)))
+    return distances
 
 
-def find_category(distances, k, data, label_col):
-    """
-    En yakın k komşuya göre sınıf tahmini yapar. Hem Temel Knn hem de Ağırlıklı Knn kullanılır.
-    :param distances:
-    :param k:
-    :param data:
-    :param label_col:
-    :return:
-    """
-    try:
-        count_0 = 0
-        count_1 = 0
+def find_category(
+    distances: List[Tuple[int, float]],
+    k: int,
+    data: pd.DataFrame,
+    label_col: str,
+) -> Tuple[int, int, List[Tuple[float, int]]]:
+    sorted_distances = sorted(distances, key=lambda x: x[1])[:k]
 
-        freq0 = 0
-        freq1 = 0
-        
-        distances_k =[]
-        sorted_distances = sorted(distances, key=lambda x: x[1])
-        sorted_distances_k = sorted_distances[:k]
+    count = {}
+    weights = {}
+    distances_k: List[Tuple[float, int]] = []
 
-        for idx, distance in sorted_distances_k:
-            if data[label_col][idx] == 0:
-                count_0 += 1
-                try:
-                    freq0 += 1 / distance
-                    distances_k.append((float(distance),int(data[label_col][idx])))
-                except ZeroDivisionError:
-                    freq0 += float('inf')  
-            else:
-                count_1 += 1
-                try:
-                    freq1 += 1 / distance
-                    distances_k.append((float(distance),int(data[label_col][idx])))
+    for idx, distance in sorted_distances:
+        label = int(data[label_col].iat[idx])
+        weight = float("inf") if distance == 0 else 1.0 / distance
 
-                except ZeroDivisionError:
-                    freq1 += float('inf')
+        count[label] = count.get(label, 0) + 1
+        weights[label] = weights.get(label, 0.0) + weight
+        distances_k.append((distance, label))
 
-        if freq0 > freq1:
-            result_weighted = 0
-        else:
-            result_weighted = 1
-        
-        if count_0 > count_1:
-            result_base = 0
-        else:
-            result_base = 1
-    except Exception as e:
-        print(e)
-    return result_weighted, result_base,distances_k
+    weighted_choice = max(weights.items(), key=lambda item: item[1])[0]
+    base_choice = max(count.items(), key=lambda item: item[1])[0]
+    return weighted_choice, base_choice, distances_k
 
 
+def knn_algorithm(
+    feature_cols: Sequence[str],
+    label_col: str,
+    data: pd.DataFrame,
+    prediction: Sequence[float],
+    k: int,
+) -> Tuple[int, int, List[Tuple[float, int]]]:
+    validate_k(k, len(data))
+    distances = calculate_euclid_distance(feature_cols, data, prediction)
+    return find_category(distances, k, data, label_col)
 
-def main():
-    
+
+def _prompt_features(feature_cols: Iterable[str]) -> List[float]:
+    values: List[float] = []
+    for col in feature_cols:
+        user_input = input(f"Enter value for {col}: ")
+        values.append(float(user_input))
+    return values
+
+
+def main() -> None:
     data = pd.read_csv("iphone_purchase_records.csv")
-    feature_cols = data.columns[:-1]
+    feature_cols = list(data.columns[:-1])
     label_col = data.columns[-1]
 
-    print(f"Özellik sütunları: {list(feature_cols)}")
-    print(f"Veri kümesi:\n{data}\n")
-
-    prediction = []
-    for col in feature_cols:
-        try:
-            user_input = float(input(f"Lütfen {col} değerini yazınız: "))
-            prediction.append(user_input)
-        except Exception as e:
-            print(e)
-            return
-
-    print(f"Tüm girilen özellik değerleri: {prediction}")
+    print(f"Feature columns: {feature_cols}")
+    print(f"Dataset size: {len(data)} rows\n")
 
     try:
-        k = int(input("k (en yakın komşu) sayısını giriniz:"))
-        if k < len(data):
-            result_weighted, result_base, distances_k = knn_algorithm(feature_cols, label_col, data, prediction, k)
-            print(f"\nTemel Knn ile tahmin edilen kategori: {result_base}\nAğırlıklı Knn ile tahmin edilen kategori :{result_weighted}\n")
-            print(f"En yakın 3 uzaklık ve etiketleri{distances_k}")
-        else:
-            print("k değeri veri boyutundan büyük, lütfen tekrar deneyiniz.")
-    except Exception as e:
-        print(e)
+        prediction = _prompt_features(feature_cols)
+        k = int(input("Enter k (number of neighbors): "))
+        weighted, base, distances_k = knn_algorithm(feature_cols, label_col, data, prediction, k)
+    except ValueError as exc:
+        print(f"Input error: {exc}")
+        return
+
+    print(f"\nWeighted KNN predicted category: {weighted}")
+    print(f"Basic KNN predicted category: {base}")
+    print(f"Nearest {k} distances and labels: {distances_k}")
 
 
 if __name__ == "__main__":
